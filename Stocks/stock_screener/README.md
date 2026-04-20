@@ -84,6 +84,12 @@ python stock_screener.py --min-score 5
 python stock_screener.py --export results.csv
 ```
 
+### Export a browser-ready HTML report
+```bash
+python stock_screener.py --export-html report.html
+```
+The HTML file is fully self-contained — no internet required to open it. It includes sortable columns, search/filter controls, a tab for top picks vs all stocks, and expandable per-criterion detail for every stock.
+
 ### Quiet mode — summary table only, no per-stock breakdown
 ```bash
 python stock_screener.py --quiet
@@ -92,6 +98,7 @@ python stock_screener.py --quiet
 ### Combine options
 ```bash
 python stock_screener.py --watchlist sp500 --min-score 5 --quiet --export top_picks.csv
+python stock_screener.py --tickers AAPL MSFT PFE --export-html report.html
 ```
 
 ---
@@ -165,6 +172,7 @@ Sector-specific P/E ceilings are also configurable inside `check_pe_ratio()`.
 | `--verbose` | on | Show per-criterion breakdown for each stock |
 | `--quiet` | off | Show summary table only |
 | `--export FILE.csv` | — | Save full results to a CSV file |
+| `--export-html FILE.html` | — | Save a self-contained HTML report (open in any browser) |
 | `--throttle N` | `0.8` | Seconds to wait between API calls |
 
 ---

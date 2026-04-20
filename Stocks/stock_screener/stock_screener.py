@@ -17,7 +17,8 @@ Usage:
     python stock_screener.py --tickers AAPL MSFT GOOG # screen specific tickers
     python stock_screener.py --watchlist sp500        # screen S&P 500 universe
     python stock_screener.py --min-score 5            # only show stocks scoring 5+/7
-    python stock_screener.py --export results.csv     # also save to CSV
+    python stock_screener.py --export results.csv      # also save to CSV
+    python stock_screener.py --export-html report.html # save as browser report
 """
 
 import argparse
@@ -619,6 +620,447 @@ def export_csv(results: list[StockResult], path: str):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  HTML EXPORT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def export_html(results: list, path: str, min_score: float):
+    """Generate a self-contained, browser-ready HTML report."""
+
+    generated_at = datetime.now().strftime("%B %d, %Y at %I:%M %p")
+    total        = len(results)
+    errors       = sum(1 for r in results if r.error)
+    screened     = total - errors
+    passing      = sorted(
+        [r for r in results if not r.error and r.score >= min_score],
+        key=lambda r: r.score, reverse=True
+    )
+    all_valid    = sorted(
+        [r for r in results if not r.error],
+        key=lambda r: r.score, reverse=True
+    )
+
+    # ── rating badge colours ──────────────────────────────────────────────────
+    def rating_cls(r):
+        if r.score >= 6:   return "strong-buy"
+        if r.score >= 5:   return "buy"
+        if r.score >= 4:   return "watch"
+        if r.score >= 2.5: return "weak"
+        return "avoid"
+
+    def status_cls(s):
+        return {"PASS": "pass", "PARTIAL": "partial",
+                "FAIL": "fail", "UNKNOWN": "unknown"}.get(s, "unknown")
+
+    def status_icon(s):
+        return {"PASS": "✓", "PARTIAL": "~", "FAIL": "✗", "UNKNOWN": "?"}.get(s, "?")
+
+    def score_bar(score):
+        filled = int(score)
+        half   = 1 if (score - filled) >= 0.5 else 0
+        empty  = 7 - filled - half
+        return (
+            '<span class="bar-fill">' + '█' * filled + '</span>' +
+            ('<span class="bar-half">▒</span>' if half else '') +
+            '<span class="bar-empty">' + '░' * empty + '</span>'
+        )
+
+    # ── summary cards ─────────────────────────────────────────────────────────
+    top_picks    = sum(1 for r in all_valid if r.score >= 5)
+    avg_score    = (sum(r.score for r in all_valid) / len(all_valid)) if all_valid else 0
+
+    # ── detail rows for all stocks ────────────────────────────────────────────
+    def detail_rows(stock_list):
+        rows = []
+        for r in stock_list:
+            cls  = rating_cls(r)
+            rows.append(f"""
+        <tr class="stock-row" data-score="{r.score}" data-ticker="{r.ticker}"
+            onclick="toggleDetail(this)">
+          <td class="td-ticker"><strong>{r.ticker}</strong></td>
+          <td class="td-name">{r.name[:40]}</td>
+          <td>${r.price:.2f}</td>
+          <td>{r.sector}</td>
+          <td><span class="score-bar">{score_bar(r.score)}</span> {r.score:.1f}/7</td>
+          <td><span class="badge {cls}">{r.rating}</span></td>
+          <td class="td-icons">{"".join(
+              f'<span class="ci {status_cls(c.status)}" title="{CRITERION_NAMES[i]}: {c.note}">{status_icon(c.status)}</span>'
+              for i, c in enumerate(r.criteria)
+          )}</td>
+        </tr>
+        <tr class="detail-row hidden" id="detail-{r.ticker}">
+          <td colspan="7">
+            <div class="detail-grid">
+              {"".join(f'''
+              <div class="detail-item {status_cls(c.status)}">
+                <div class="detail-header">
+                  <span class="detail-icon">{status_icon(c.status)}</span>
+                  <span class="detail-name">{CRITERION_NAMES[i]}</span>
+                </div>
+                <div class="detail-note">{c.note}</div>
+              </div>''' for i, c in enumerate(r.criteria))}
+            </div>
+          </td>
+        </tr>""")
+        return "\n".join(rows)
+
+    passing_rows = detail_rows(passing)
+    all_rows     = detail_rows(all_valid)
+
+    # ── full HTML ─────────────────────────────────────────────────────────────
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stock Screener Report — {generated_at}</title>
+<style>
+  *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+
+  :root {{
+    --bg:       #f8f9fb;
+    --surface:  #ffffff;
+    --border:   #e2e5ea;
+    --text:     #1a1d23;
+    --muted:    #6b7280;
+    --green:    #16a34a;
+    --green-bg: #dcfce7;
+    --amber:    #b45309;
+    --amber-bg: #fef3c7;
+    --red:      #dc2626;
+    --red-bg:   #fee2e2;
+    --blue:     #1d4ed8;
+    --blue-bg:  #dbeafe;
+    --gray:     #374151;
+    --gray-bg:  #f3f4f6;
+    --radius:   8px;
+  }}
+
+  body {{
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+    line-height: 1.5;
+  }}
+
+  /* ── layout ── */
+  .page {{ max-width: 1200px; margin: 0 auto; padding: 2rem 1.5rem; }}
+
+  /* ── header ── */
+  .header {{ margin-bottom: 2rem; }}
+  .header h1 {{ font-size: 24px; font-weight: 700; margin-bottom: 4px; }}
+  .header .sub {{ color: var(--muted); font-size: 13px; }}
+
+  /* ── summary cards ── */
+  .summary {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 2rem; }}
+  .card {{ background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem; }}
+  .card .label {{ font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 4px; }}
+  .card .value {{ font-size: 26px; font-weight: 700; }}
+  .card.green .value {{ color: var(--green); }}
+  .card.amber .value {{ color: var(--amber); }}
+
+  /* ── tabs ── */
+  .tabs {{ display: flex; gap: 4px; margin-bottom: 1rem; border-bottom: 2px solid var(--border); padding-bottom: 0; }}
+  .tab {{ padding: 8px 18px; cursor: pointer; border: none; background: none; font-size: 14px;
+          color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -2px; border-radius: 4px 4px 0 0; }}
+  .tab:hover {{ color: var(--text); background: var(--bg); }}
+  .tab.active {{ color: var(--blue); border-bottom-color: var(--blue); font-weight: 600; }}
+
+  /* ── filters ── */
+  .filters {{ display: flex; gap: 10px; margin-bottom: 1rem; flex-wrap: wrap; align-items: center; }}
+  .filters input, .filters select {{
+    border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 6px 10px; font-size: 13px; background: var(--surface);
+    color: var(--text); outline: none;
+  }}
+  .filters input:focus, .filters select:focus {{ border-color: var(--blue); }}
+  .filter-label {{ font-size: 12px; color: var(--muted); }}
+
+  /* ── table ── */
+  .table-wrap {{ overflow-x: auto; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }}
+  table {{ width: 100%; border-collapse: collapse; }}
+  th {{
+    background: var(--bg); padding: 10px 12px; text-align: left;
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--muted); border-bottom: 1px solid var(--border);
+    cursor: pointer; user-select: none; white-space: nowrap;
+  }}
+  th:hover {{ color: var(--text); }}
+  th .sort-arrow {{ margin-left: 4px; opacity: 0.4; }}
+  th.sorted .sort-arrow {{ opacity: 1; color: var(--blue); }}
+  td {{ padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }}
+  .stock-row {{ cursor: pointer; transition: background 0.1s; }}
+  .stock-row:hover {{ background: #f0f4ff; }}
+  .stock-row:last-of-type td {{ border-bottom: none; }}
+  .td-ticker {{ font-weight: 600; font-size: 14px; white-space: nowrap; }}
+  .td-name {{ color: var(--muted); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+
+  /* ── score bar ── */
+  .score-bar {{ font-family: monospace; letter-spacing: 1px; }}
+  .bar-fill    {{ color: var(--green); }}
+  .bar-half    {{ color: var(--amber); }}
+  .bar-empty   {{ color: #d1d5db; }}
+
+  /* ── badges ── */
+  .badge {{ display: inline-block; padding: 3px 10px; border-radius: 99px; font-size: 11px; font-weight: 600; white-space: nowrap; }}
+  .strong-buy {{ background: var(--green-bg); color: var(--green); }}
+  .buy        {{ background: #d1fae5;          color: #065f46; }}
+  .watch      {{ background: var(--amber-bg);  color: var(--amber); }}
+  .weak       {{ background: #ffe4e6;          color: #9f1239; }}
+  .avoid      {{ background: var(--red-bg);    color: var(--red); }}
+
+  /* ── criterion icons ── */
+  .td-icons {{ white-space: nowrap; }}
+  .ci {{
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 20px; height: 20px; border-radius: 50%;
+    font-size: 11px; font-weight: 700; margin-right: 2px;
+    cursor: default;
+  }}
+  .ci.pass    {{ background: var(--green-bg); color: var(--green); }}
+  .ci.partial {{ background: var(--amber-bg); color: var(--amber); }}
+  .ci.fail    {{ background: var(--red-bg);   color: var(--red); }}
+  .ci.unknown {{ background: var(--gray-bg);  color: var(--gray); }}
+
+  /* ── detail row ── */
+  .detail-row td {{ background: #f8faff; padding: 12px 16px; }}
+  .detail-row.hidden {{ display: none; }}
+  .detail-grid {{
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 8px;
+  }}
+  .detail-item {{
+    padding: 8px 12px; border-radius: 6px; border-left: 3px solid transparent;
+    background: var(--surface);
+  }}
+  .detail-item.pass    {{ border-color: var(--green); }}
+  .detail-item.partial {{ border-color: var(--amber); }}
+  .detail-item.fail    {{ border-color: var(--red); }}
+  .detail-item.unknown {{ border-color: #d1d5db; }}
+  .detail-header {{ display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }}
+  .detail-icon {{ font-weight: 700; font-size: 13px; }}
+  .detail-item.pass    .detail-icon {{ color: var(--green); }}
+  .detail-item.partial .detail-icon {{ color: var(--amber); }}
+  .detail-item.fail    .detail-icon {{ color: var(--red); }}
+  .detail-item.unknown .detail-icon {{ color: var(--muted); }}
+  .detail-name {{ font-size: 12px; font-weight: 600; }}
+  .detail-note {{ font-size: 12px; color: var(--muted); line-height: 1.4; }}
+
+  /* ── legend ── */
+  .legend {{ display: flex; flex-wrap: wrap; gap: 10px; margin-top: 1.5rem; font-size: 12px; color: var(--muted); }}
+  .legend-item {{ display: flex; align-items: center; gap: 5px; }}
+
+  /* ── footer ── */
+  .footer {{ margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--border);
+             font-size: 12px; color: var(--muted); }}
+
+  /* ── tab panels ── */
+  .panel {{ display: none; }}
+  .panel.active {{ display: block; }}
+
+  @media (max-width: 600px) {{
+    .td-name, .td-icons {{ display: none; }}
+  }}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- header -->
+  <div class="header">
+    <h1>📈 Stock Screener Report</h1>
+    <div class="sub">Generated {generated_at} &nbsp;·&nbsp; Data via Yahoo Finance &nbsp;·&nbsp; Min score shown: {min_score}/7</div>
+  </div>
+
+  <!-- summary cards -->
+  <div class="summary">
+    <div class="card"><div class="label">Tickers screened</div><div class="value">{screened}</div></div>
+    <div class="card green"><div class="label">Score ≥ 5/7 (Buy+)</div><div class="value">{top_picks}</div></div>
+    <div class="card"><div class="label">Avg score</div><div class="value">{avg_score:.1f}</div></div>
+    <div class="card amber"><div class="label">Score ≥ {min_score}/7 shown</div><div class="value">{len(passing)}</div></div>
+    <div class="card"><div class="label">Errors / no data</div><div class="value">{errors}</div></div>
+  </div>
+
+  <!-- tabs -->
+  <div class="tabs">
+    <button class="tab active" onclick="showTab('passing', this)">Top picks (score ≥ {min_score})</button>
+    <button class="tab" onclick="showTab('all', this)">All stocks</button>
+  </div>
+
+  <!-- filters -->
+  <div class="filters">
+    <span class="filter-label">Filter:</span>
+    <input type="text" id="searchBox" placeholder="Search ticker or name…" oninput="applyFilters()" style="width:200px">
+    <select id="ratingFilter" onchange="applyFilters()">
+      <option value="">All ratings</option>
+      <option value="strong-buy">Strong Buy</option>
+      <option value="buy">Buy</option>
+      <option value="watch">Hold / Watch</option>
+      <option value="weak">Weak</option>
+      <option value="avoid">Avoid</option>
+    </select>
+    <select id="minScoreFilter" onchange="applyFilters()">
+      <option value="0">Min score: any</option>
+      <option value="3">3+</option>
+      <option value="4">4+</option>
+      <option value="5">5+</option>
+      <option value="6">6+</option>
+    </select>
+  </div>
+
+  <!-- passing tab -->
+  <div id="panel-passing" class="panel active">
+    <div class="table-wrap">
+      <table id="table-passing">
+        <thead>
+          <tr>
+            <th onclick="sortTable('table-passing',0)">Ticker <span class="sort-arrow">↕</span></th>
+            <th onclick="sortTable('table-passing',1)">Name <span class="sort-arrow">↕</span></th>
+            <th onclick="sortTable('table-passing',2)">Price <span class="sort-arrow">↕</span></th>
+            <th onclick="sortTable('table-passing',3)">Sector <span class="sort-arrow">↕</span></th>
+            <th onclick="sortTable('table-passing',4)" class="sorted">Score ↓</th>
+            <th onclick="sortTable('table-passing',5)">Rating <span class="sort-arrow">↕</span></th>
+            <th title="1=Price near low, 2=Insider buy, 3=Volatility, 4=Mkt cap, 5=P/E, 6=Balance sheet, 7=Revenue">Criteria 1–7 ℹ</th>
+          </tr>
+        </thead>
+        <tbody id="tbody-passing">
+          {passing_rows}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- all stocks tab -->
+  <div id="panel-all" class="panel">
+    <div class="table-wrap">
+      <table id="table-all">
+        <thead>
+          <tr>
+            <th onclick="sortTable('table-all',0)">Ticker <span class="sort-arrow">↕</span></th>
+            <th onclick="sortTable('table-all',1)">Name <span class="sort-arrow">↕</span></th>
+            <th onclick="sortTable('table-all',2)">Price <span class="sort-arrow">↕</span></th>
+            <th onclick="sortTable('table-all',3)">Sector <span class="sort-arrow">↕</span></th>
+            <th onclick="sortTable('table-all',4)" class="sorted">Score ↓</th>
+            <th onclick="sortTable('table-all',5)">Rating <span class="sort-arrow">↕</span></th>
+            <th title="1=Price near low, 2=Insider buy, 3=Volatility, 4=Mkt cap, 5=P/E, 6=Balance sheet, 7=Revenue">Criteria 1–7 ℹ</th>
+          </tr>
+        </thead>
+        <tbody id="tbody-all">
+          {all_rows}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- legend -->
+  <div class="legend">
+    <strong>Criteria:</strong>
+    <span class="legend-item"><span class="ci pass">✓</span> Pass (1pt)</span>
+    <span class="legend-item"><span class="ci partial">~</span> Partial (0.5pt)</span>
+    <span class="legend-item"><span class="ci fail">✗</span> Fail (0pt)</span>
+    <span class="legend-item"><span class="ci unknown">?</span> No data</span>
+    &nbsp;|&nbsp;
+    <span class="legend-item"><span class="badge strong-buy">Strong Buy</span> 6–7</span>
+    <span class="legend-item"><span class="badge buy">Buy</span> 5</span>
+    <span class="legend-item"><span class="badge watch">Hold/Watch</span> 4</span>
+    <span class="legend-item"><span class="badge weak">Weak</span> 2.5–3.5</span>
+    <span class="legend-item"><span class="badge avoid">Avoid</span> &lt;2.5</span>
+    &nbsp;|&nbsp; Click any row to expand criteria detail.
+  </div>
+
+  <div class="footer">
+    ⚠️ For informational purposes only. Not financial advice. Always verify data before making investment decisions.
+  </div>
+
+</div>
+
+<script>
+  /* ── tab switching ── */
+  function showTab(name, btn) {{
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.getElementById('panel-' + name).classList.add('active');
+    btn.classList.add('active');
+    applyFilters();
+  }}
+
+  /* ── expand / collapse detail row ── */
+  function toggleDetail(row) {{
+    const ticker = row.dataset.ticker;
+    const detail = document.getElementById('detail-' + ticker);
+    if (detail) detail.classList.toggle('hidden');
+  }}
+
+  /* ── column sort ── */
+  const sortState = {{}};
+  function sortTable(tableId, colIdx) {{
+    const table = document.getElementById(tableId);
+    const tbody = table.querySelector('tbody');
+    const key   = tableId + ':' + colIdx;
+    sortState[key] = !sortState[key];
+    const asc = sortState[key];
+
+    // collect stock rows only (skip detail rows)
+    const pairs = [];
+    const rows  = Array.from(tbody.querySelectorAll('tr'));
+    for (let i = 0; i < rows.length; i++) {{
+      if (rows[i].classList.contains('stock-row')) {{
+        pairs.push({{ stock: rows[i], detail: rows[i+1] }});
+      }}
+    }}
+
+    pairs.sort((a, b) => {{
+      const av = a.stock.cells[colIdx]?.innerText.replace(/[$,]/g,'') || '';
+      const bv = b.stock.cells[colIdx]?.innerText.replace(/[$,]/g,'') || '';
+      const an = parseFloat(av), bn = parseFloat(bv);
+      if (!isNaN(an) && !isNaN(bn)) return asc ? an - bn : bn - an;
+      return asc ? av.localeCompare(bv) : bv.localeCompare(av);
+    }});
+
+    pairs.forEach(p => {{ tbody.appendChild(p.stock); tbody.appendChild(p.detail); }});
+
+    table.querySelectorAll('th').forEach(th => th.classList.remove('sorted'));
+    table.querySelectorAll('th')[colIdx].classList.add('sorted');
+    table.querySelectorAll('th')[colIdx].querySelector('.sort-arrow') &&
+      (table.querySelectorAll('th')[colIdx].querySelector('.sort-arrow').textContent = asc ? '↑' : '↓');
+  }}
+
+  /* ── filters ── */
+  function applyFilters() {{
+    const q     = document.getElementById('searchBox').value.toLowerCase();
+    const rat   = document.getElementById('ratingFilter').value;
+    const minSc = parseFloat(document.getElementById('minScoreFilter').value) || 0;
+
+    document.querySelectorAll('.stock-row').forEach(row => {{
+      const ticker = row.dataset.ticker?.toLowerCase() || '';
+      const name   = row.cells[1]?.innerText.toLowerCase() || '';
+      const score  = parseFloat(row.dataset.score) || 0;
+      const badge  = row.querySelector('.badge');
+      const badgeCls = badge ? badge.className.replace('badge','').trim() : '';
+
+      const matchQ   = !q   || ticker.includes(q) || name.includes(q);
+      const matchRat = !rat || badgeCls === rat;
+      const matchSc  = score >= minSc;
+      const visible  = matchQ && matchRat && matchSc;
+
+      row.style.display = visible ? '' : 'none';
+      const detail = document.getElementById('detail-' + row.dataset.ticker);
+      if (detail) detail.style.display = visible ? detail.classList.contains('hidden') ? 'none' : '' : 'none';
+    }});
+  }}
+</script>
+</body>
+</html>"""
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(html)
+
+    print(f"\n{GREEN}HTML report saved → {path}{RESET}")
+    print(f"  Open it in any browser: open {path}   (macOS)  or  start {path}   (Windows)")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  S&P 500 / NASDAQ 100 universe fetcher
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -661,6 +1103,8 @@ def parse_args():
                    help="Only show the summary table, no per-stock breakdown")
     p.add_argument("--export", metavar="FILE.csv",
                    help="Save all results to a CSV file")
+    p.add_argument("--export-html", metavar="FILE.html",
+                   help="Save a self-contained HTML report (open in any browser)")
     p.add_argument("--throttle", type=float, default=THROTTLE_SECONDS,
                    help=f"Seconds to wait between API calls (default: {THROTTLE_SECONDS})")
     return p.parse_args()
@@ -732,6 +1176,9 @@ def main():
     # ── Export ────────────────────────────────────────────────────────────────
     if args.export:
         export_csv(results, args.export)
+
+    if args.export_html:
+        export_html(results, args.export_html, args.min_score)
 
     # ── Top picks summary ─────────────────────────────────────────────────────
     top = sorted([r for r in results if not r.error and r.score >= 5],
